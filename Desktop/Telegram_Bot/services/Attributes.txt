@@ -1,0 +1,76 @@
+Message: telethon.tl.custom.message.Message
+
+[1] Identity and linkage
+
+id: int — message ID within the chat
+peer_id: Peer — raw peer object (user/chat/channel)
+chat: Chat | User | Channel (custom wrappers) — resolved convenience
+chat_id: int | None — numeric chat ID
+sender: User | None — convenience sender object
+sender_id: int | None
+is_channel: bool
+is_group: bool
+is_private: bool
+is_reply: bool
+reply_to: MessageReplyHeader | None
+fwd_from: MessageFwdHeader | None — forward info
+grouped_id: int | None — media album group identifier
+
+[2] Core content
+
+message: str | None — message text
+raw_text: str — text without entities
+text: str — alias for message/raw_text
+date: datetime — UTC timestamp
+edit_date: datetime | None — when edited
+out: bool — True if sent by you
+mentioned: bool — you were mentioned
+silent: bool — silent message
+post: bool — channel post_
+
+[3] Media (presence flags and raw containers)
+
+media: MessageMedia | None — any media container
+photo: bool
+video: bool
+audio: bool
+voice: bool
+document: bool
+sticker: bool
+contact: bool
+geo: bool
+venue: bool
+game: bool
+poll: bool
+web_preview: bool — webpage attachment
+file: Document | None — underlying document if present
+file_size: int | None
+file_name: str | None
+mime_type: str | None
+duration: float | None — for audio/video
+width: int | None — media width
+height: int | None — media height
+ttl: int | None — self-destruct timer for secret media
+
+
+
+Event: events.NewMessage
+
+[1] Basic
+event.raw_text: str — message text without entities
+event.text: str | None — same as raw_text (short alias)
+event.message: telethon.tl.custom.message.Message — underlying Message object
+event.chat: telethon.tl.custom.chat.Chat | telethon.tl.custom.dialog.Dialog | None
+event.input_chat: InputPeer — lightweight peer usable in API calls
+event.chat_id: int | None — numeric chat ID
+event.sender: telethon.tl.custom.user.User | telethon.tl.types.User | None
+event.sender_id: int | None
+event.is_private: bool
+event.is_group: bool
+event.is_channel: bool
+event.is_reply: bool — whether current message is replying to another
+event.reply_to: telethon.tl.types.MessageReplyHeader | None
+event.forward: telethon.tl.types.MessageFwdHeader | None
+event.client: TelegramClient — the client instance
+event.pattern_match: re.Match | None — result when using pattern= in handler_
+

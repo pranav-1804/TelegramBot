@@ -10,9 +10,12 @@ from telethon.tl.types import InputChannel
 from telethon.tl.types import ReactionEmoji, ReactionCustomEmoji, ReactionPaid
 from pathlib import Path
 from dotenv import load_dotenv
+from transformers import pipeline
 import os
 
-load_dotenv(dotenv_path=r"Path of your venv file") 
+load_dotenv(dotenv_path=r"C:\Users\prana\Desktop\Telegram_Bot\.env") 
+
+sentiment_analyzer = pipeline("sentiment-analysis")
 
 # Please create a .venv file. Add the environment variables over there.
 API_ID = int(os.getenv("API_ID"))
@@ -23,8 +26,7 @@ INVITE_LINK = os.getenv("INVITE_LINK")
 # These are the headers for the csv file. 
 HEADER = ["chat_id", "message_id", "sender_id", "timestamp", "text",
           "has_media", "media_type", "file_name", "file_size_kb",
-          "views", "reactions"]
-
+          "views", "reactions", "sentiment"]
 
 
 async def ensure_joined(client, invite_url: str):
@@ -47,14 +49,37 @@ async def ensure_joined(client, invite_url: str):
             pass
     return entity
 
-def serialize_reactions(message):
-    if not getattr(message, "reactions", None):
+def safe_serialize_reactions(message):
+    r = getattr(message, "reactions", None)
+    if not r or not getattr(r, "results", None):
         return ""
     parts = []
-    for rc in message.reactions.results:
+    for rc in r.results:
         label = render_reaction_label(rc.reaction)
         parts.append(f"{label}:{rc.count}")
     return ";".join(parts)
+
+async def process_message_for_csv(message):
+    sentiment = await asyncio.to_thread(sentiment_analyzer, message.text or "")
+    row = {
+        "chat_id": message.chat_id,
+        "message_id": message.id,
+        "sender_id": getattr(message, "sender_id", None),
+        "timestamp": message.date.isoformat() if getattr(message, "date", None) else None,
+        "text": (message.text[:3000] if message.text else ""),
+        "has_media": bool(message.media),
+        "media_type": type(message.media).__name__ if message.media else "",
+        "file_name": getattr(message.file, "name", "") if getattr(message, "file", None) else "",
+        "file_size_kb": round(getattr(message.file, "size", 0) / 1024, 2) if getattr(message, "file", None) else "",
+        "views": getattr(message, "views", None),
+        "reactions": safe_serialize_reactions(message),
+        "sentiment": sentiment[0]["label"] if sentiment else ""
+    }
+    try:
+        write_csv_row(row)
+    except Exception as e:
+        print(f"CSV write error: {e}")
+
 
 def render_reaction_label(r):
         if isinstance(r, ReactionEmoji):
@@ -70,30 +95,14 @@ def render_reaction_label(r):
 
 def write_csv_row(row_dict):
     # Ensure file exists and has header; then append
-    CSV_PATH = Path("Path to csv file")
+    CSV_PATH = Path(r"C:\Users\prana\Desktop\HFT\telegram.csv")
     file_exists = os.path.exists(CSV_PATH)
-    with open(CSV_PATH, mode="a", newline="", encoding="utf-8") as f:
+    with open(CSV_PATH, mode="a", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=HEADER)
         if not file_exists:
             writer.writeheader()
         writer.writerow(row_dict)
-
-async def process_message_for_csv(message):
-    row = {
-        "chat_id": message.chat_id,
-        "message_id": message.id,
-        "sender_id": getattr(message, "sender_id", None),
-        "timestamp": (message.date.isoformat() if getattr(message, "date", None) else None),
-        "text": (message.text[:3000] if message.text else ""),
-        "has_media": bool(message.media),
-        "media_type": type(message.media).__name__ if message.media else "",
-        "file_name": getattr(message.file, "name", "") if getattr(message, "file", None) else "",
-        "file_size_kb": round(getattr(message.file, "size", 0) / 1024, 2) if getattr(message, "file", None) else "",
-        "views": getattr(message, "views", None),
-        "reactions": serialize_reactions(message)
-    }
-    write_csv_row(row)
-
+        
 async def main():
     client = TelegramClient(SESSION, API_ID, API_HASH)
     await client.start()
@@ -134,11 +143,11 @@ async def main():
 
     if target:
         msgs = []
-        async for msg in client.iter_messages(target, limit=4):
-            msgs.append(msg)
+        # After collecting
+        msgs = [msg async for msg in client.iter_messages(target, limit=10)]
+        for m in reversed(msgs):
+            await process_message(m)
 
-            for m in reversed(msgs):
-                await process_message(m)
             
         @client.on(events.NewMessage(chats=target))
         async def handle_new(event):

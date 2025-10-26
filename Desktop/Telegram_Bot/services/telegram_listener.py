@@ -2,52 +2,90 @@
 import asyncio
 import csv
 import os
+
+from pathlib import Path
+from dotenv import load_dotenv
+
 from telethon import TelegramClient, events
 from telethon.errors import UserAlreadyParticipantError
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.types import InputChannel
-from telethon.tl.types import ReactionEmoji, ReactionCustomEmoji, ReactionPaid
-from pathlib import Path
-from dotenv import load_dotenv
+from telethon.tl.types import InputChannel, Channel, ReactionEmoji, ReactionCustomEmoji, ReactionPaid
+
 from transformers import pipeline
-import os
 
 load_dotenv(dotenv_path=r"C:\Users\prana\Desktop\Telegram_Bot\.env") 
 
-sentiment_analyzer = pipeline("sentiment-analysis")
-
-# Please create a .venv file. Add the environment variables over there.
+# Please create a .env file. Add the environment variables over there. And never the env file on github or gitlab.
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-SESSION = os.getenv("session_name")
+SESSION = os.getenv("SESSION")
 INVITE_LINK = os.getenv("INVITE_LINK")
+
+sentiment_analyzer = pipeline("sentiment-analysis")
 
 # These are the headers for the csv file. 
 HEADER = ["chat_id", "message_id", "sender_id", "timestamp", "text",
           "has_media", "media_type", "file_name", "file_size_kb",
           "views", "reactions", "sentiment"]
 
+async def list_joined_channels(client):
+    channels = []
+    async for dialog in client.iter_dialogs():
+        ent = dialog.entity
+        if isinstance(ent, Channel):
+            channels.append(ent)
+    return channels
 
-async def ensure_joined(client, invite_url: str):
-    # Handles both invite hash links and public @ links
-    if "/+" in invite_url:
-        # Private invite hash style: https://t.me/+<hash>
-        invite_hash = invite_url.rsplit("/", 1)[-1].replace("+", "")
+
+async def process_last_messages_for_all(client, process_message, limit):
+    channels = await list_joined_channels(client)
+    print(f"No INVITE_URL provided. Listening to all chats. Found {len(channels)} channels.")
+
+    for ch in channels:
         try:
-            res = await client(ImportChatInviteRequest(invite_hash))
-            entity = res.chats[0] if res.chats else res.updates[0].chat
-        except UserAlreadyParticipantError:
-            entity = await client.get_entity(invite_url)
-    else:
-        # Public link or t.me/username
-        entity = await client.get_entity(invite_url)
-        # If it's a channel and we’re not a participant, try joining
-        try:
-            await client(JoinChannelRequest(entity))
-        except Exception:
-            pass
-    return entity
+            # Pull last N messages for this channel
+            msgs = [m async for m in client.iter_messages(ch, limit=limit)]
+            for m in reversed(msgs):
+                await process_message(m)
+        except Exception as e:
+            print(f"Failed to fetch history for {getattr(ch, 'title', ch.id)}: {e}")
+
+    # Register one global handler for new messages (all chats)
+    @client.on(events.NewMessage())
+    async def handle_all(event):
+        await process_message(event.message)  # pass the Message object
+
+    return channels  # optional, if you need the list
+
+
+async def process_last_message_for_one_channel(client, process_message, target, limit):
+
+        msgs = [msg async for msg in client.iter_messages(target, limit=10)]
+        for m in reversed(msgs):
+            await process_message(m)
+
+        @client.on(events.NewMessage(chats=target))
+        async def handle_new(event):
+             message = event.message
+             await process_message(message)
+            
+        @client.on(events.MessageEdited(chats=target))
+        async def handle_edit(event):
+            message = event.message
+            await process_message(message)
+
+
+def write_csv_row(row_dict):
+    # Ensure file exists and has header; then append
+    CSV_PATH = Path(r"C:\Users\prana\Desktop\HFT\telegram.csv")
+    file_exists = os.path.exists(CSV_PATH)
+    with open(CSV_PATH, mode="a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=HEADER)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row_dict)
+
 
 def safe_serialize_reactions(message):
     r = getattr(message, "reactions", None)
@@ -58,6 +96,7 @@ def safe_serialize_reactions(message):
         label = render_reaction_label(rc.reaction)
         parts.append(f"{label}:{rc.count}")
     return ";".join(parts)
+
 
 async def process_message_for_csv(message):
     sentiment = await asyncio.to_thread(sentiment_analyzer, message.text or "")
@@ -80,7 +119,6 @@ async def process_message_for_csv(message):
     except Exception as e:
         print(f"CSV write error: {e}")
 
-
 def render_reaction_label(r):
         if isinstance(r, ReactionEmoji):
             return r.emoticon  # e.g., "👍"
@@ -93,15 +131,32 @@ def render_reaction_label(r):
         # Fallback for future types
         return str(r)
 
-def write_csv_row(row_dict):
-    # Ensure file exists and has header; then append
-    CSV_PATH = Path(r"C:\Users\prana\Desktop\HFT\telegram.csv")
-    file_exists = os.path.exists(CSV_PATH)
-    with open(CSV_PATH, mode="a", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=HEADER)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(row_dict)
+def _is_empty(s: str) -> bool:
+    return s is None or not str(s).strip()
+
+async def ensure_joined(client, invite_url: str):
+
+    if _is_empty(invite_url):
+        return None
+     
+    # Handles both invite hash links and public @ links
+    if "/+" in invite_url:
+        # Private invite hash style: https://t.me/+<hash>
+        invite_hash = invite_url.rsplit("/", 1)[-1].replace("+", "")
+        try:
+            res = await client(ImportChatInviteRequest(invite_hash))
+            entity = res.chats[0] if res.chats else res.updates[0].chat
+        except UserAlreadyParticipantError:
+            entity = await client.get_entity(invite_url)
+    else:
+        # Public link or t.me/username
+        entity = await client.get_entity(invite_url)
+        # If it's a channel and we’re not a participant, try joining
+        try:
+            await client(JoinChannelRequest(entity))
+        except Exception:
+            pass
+    return entity
         
 async def main():
     client = TelegramClient(SESSION, API_ID, API_HASH)
@@ -142,27 +197,13 @@ async def main():
         await process_message_for_csv(message)
 
     if target:
-        msgs = []
+        print("Listening to single channel ")
+        process_last_message_for_one_channel(client, process_message, target, limit= 5)
         # After collecting
-        msgs = [msg async for msg in client.iter_messages(target, limit=10)]
-        for m in reversed(msgs):
-            await process_message(m)
-
-            
-        @client.on(events.NewMessage(chats=target))
-        async def handle_new(event):
-             message = event.message
-             await process_message(message)
-            
-        @client.on(events.MessageEdited(chats=target))
-        async def handle_edit(event):
-            message = event.message
-            await process_message(message)
+        
     else:
         print("No INVITE_URL provided. Listening to all chats.")
-        @client.on(events.NewMessage())
-        async def handle_all(event):
-            await process_message(event)
+        await process_last_messages_for_all(client, process_message, limit=5)
 
     print("Listening for messages...")
     await client.run_until_disconnected()

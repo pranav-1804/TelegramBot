@@ -6,6 +6,8 @@ services:
     container_name: telegram_bot
     env_file:
       - .env
+    environment:
+      - DATA_DIR=/app/data
     volumes:
       - ./session_name.session:/app/session_name.session
       - ./data:/app/data

@@ -2,9 +2,11 @@
 import asyncio
 import csv
 import os
+import json
 
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import load_dotenv,find_dotenv
+from datetime import datetime
 
 from telethon import TelegramClient, events
 from telethon.errors import UserAlreadyParticipantError
@@ -14,13 +16,20 @@ from telethon.tl.types import InputChannel, Channel, ReactionEmoji, ReactionCust
 
 from transformers import pipeline
 
-load_dotenv(dotenv_path=r"{Path for the env file}") 
+load_dotenv(find_dotenv())
 
 # Please create a .env file. Add the environment variables over there. And never the env file on github or gitlab.
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 INVITE_LINK = os.getenv("INVITE_LINK")
+
+
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+JSON_PATH = DATA_DIR / f"messages_{timestamp}.json"
 
 sentiment_analyzer = pipeline("sentiment-analysis")
 
@@ -56,7 +65,7 @@ async def process_last_messages_for_all(client, process_message, limit):
     async def handle_all(event):
         await process_message(event.message)  
 
-    return channels  
+    return channels  # optional, if you need the list
 
 
 async def process_last_message_for_one_channel(client, process_message, target, limit):
@@ -87,6 +96,24 @@ def write_csv_row(row_dict):
         writer.writerow(row_dict)
 
 
+def write_json_entry(entry):
+    """Append a single JSON entry to a file."""
+    try:
+        existing_data = []
+        if JSON_PATH.exists():
+            with open(JSON_PATH, "r", encoding="utf-8-sig") as f:
+                try:
+                    existing_data = json.load(f)
+                except json.JSONDecodeError:
+                    existing_data = []
+
+        existing_data.append(entry)
+        with open(JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(existing_data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"JSON write error: {e}")
+
+
 def safe_serialize_reactions(message):
     r = getattr(message, "reactions", None)
     if not r or not getattr(r, "results", None):
@@ -115,7 +142,8 @@ async def process_message_for_csv(message):
         "sentiment": sentiment[0]["label"] if sentiment else ""
     }
     try:
-        write_csv_row(row)
+        #write_csv_row(row)
+        write_json_entry(row)
     except Exception as e:
         print(f"CSV write error: {e}")
 
@@ -199,7 +227,6 @@ async def main():
     if target:
         print("Listening to single channel ")
         process_last_message_for_one_channel(client, process_message, target, limit= 5)
-        # After collecting
         
     else:
         print("No INVITE_URL provided. Listening to all chats.")

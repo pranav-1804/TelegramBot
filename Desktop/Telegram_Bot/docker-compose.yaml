@@ -2,14 +2,15 @@ version: "3.9"
 
 services:
   telegram_bot:
-    build: .
     container_name: telegram_bot
+    build: .
     env_file:
       - .env
-    environment:
-      - DATA_DIR=/app/data
     volumes:
       - ./session_name.session:/app/session_name.session
-      - ./data:/app/data
+      - data:/app/data
     restart: always
     command: python services/telegram_listener.py
+
+volumes:
+  data:

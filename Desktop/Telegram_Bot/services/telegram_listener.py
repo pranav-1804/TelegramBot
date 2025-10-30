@@ -33,7 +33,7 @@ JSON_PATH = DATA_DIR / f"messages_{timestamp}.json"
 
 sentiment_analyzer = pipeline("sentiment-analysis")
 
-# These are the headers for the csv file. 
+# These are the headers for the Json file. 
 HEADER = ["chat_id", "message_id", "sender_id", "timestamp", "text",
           "has_media", "media_type", "file_name", "file_size_kb",
           "views", "reactions", "sentiment"]

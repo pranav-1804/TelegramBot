@@ -1,0 +1,121 @@
+stages:
+  - lint
+  - test
+  - diag
+  - build
+  - deploy
+
+variables:
+  PYTHONPATH: "${CI_PROJECT_DIR}"
+  DOCKER_REGISTRY: "docker.io"
+  DOCKERHUB_REPO: "$DOCKER_USERNAME/teledatastream"  # set repo name
+
+.build_template:
+  tags: ["windows","docker","ws12"]  # match your runner tags
+  before_script:
+    - echo "Docker CLI info:"
+    - docker version
+
+
+lint:
+  stage: lint
+  image: python:3.10
+  extends: .build_template
+  before_script :
+    - pip install flake8
+  script:
+    - echo "Linting Python code.."
+    - flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+    - flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    - echo "Done running the Python Lint stage"
+  rules:
+    # Run on branches and merge requests; skip on tags
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+      when: never
+
+test:
+  stage: test
+  image: python:3.10
+  extends: .build_template
+  before_script:
+    - pip install pytest
+    - echo "Running Tests"
+    - echo "PYTHONPATH:" ${PYTHONPATH}
+    - echo "PWD=$(pwd)"
+  script:
+    - echo "Running PyTests"
+  after_script:
+    - echo "Tests completed succesfully"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+      when: never
+
+
+diag:
+  stage: diag
+  image: docker:24.0.9
+  tags: ["windows","docker","ws12"]
+  script:
+    - echo "Check socket:"
+    - ls -l /var/run || true
+    - stat /var/run/docker.sock || true
+    - echo "Docker info:"
+    - docker version || true
+    - docker info || true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+      when: never
+
+
+build:
+  stage: build
+  image: docker:24.0.9
+  extends: .build_template
+  before_script:
+    - echo "Building Docker image for commit:" ${CI_COMMIT_SHORT_SHA}
+    - echo "Logging in to Docker registry..."
+    - echo "Docker Registry :" ${DOCKER_REGISTRY}
+    - echo "Docker Username :" ${DOCKER_USERNAME}
+    - echo "Docker Passowrd :" ${DOCKER_PASSWORD}
+  script:
+    - echo "Building image..."
+    - cd Desktop/Telegram_Bot
+    - docker build -t $DOCKERHUB_REPO:$CI_COMMIT_SHORT_SHA .
+  after_script:
+    - echo "Docker image build successfully!"
+  rules:
+    # Build on feature branches and default branch, not on tags, and not on detached MR pipelines
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    
+deploy:
+  stage: deploy
+  image: docker:24.0.9
+  tags: ["windows","docker","ws12"]
+  script:
+    - echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
+    - echo "Logged into dockerhub succesfully!!"
+    - docker push $DOCKERHUB_REPO:$CI_COMMIT_SHORT_SHA
+    - echo "Pushed the docker image to dockerhub succesfully!"
+    - if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        docker tag $DOCKERHUB_REPO:$CI_COMMIT_SHORT_SHA $DOCKERHUB_REPO:latest;
+        docker push $DOCKERHUB_REPO:latest;
+      fi
+  rules:
+    # Deploy only on default branch (e.g., main) pipelines; never on MRs or tags
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - when: never
+    

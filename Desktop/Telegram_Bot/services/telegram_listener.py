@@ -96,9 +96,21 @@ def write_csv_row(row_dict):
         writer.writerow(row_dict)
 
 
-def write_json_entry(entry):
-    """Append a single JSON entry to a file."""
+def safe_serialize_reactions(message):
+    r = getattr(message, "reactions", None)
+    if not r or not getattr(r, "results", None):
+        return ""
+    parts = []
+    for rc in r.results:
+        label = render_reaction_label(rc.reaction)
+        parts.append(f"{label}:{rc.count}")
+    return ";".join(parts)
+
+def write_json_entry_per_post(entry, message_id, sender_id):
+    """Create a separate JSON file for each post."""
     try:
+        JSON_PATH = DATA_DIR / f"output/post_{message_id}_{sender_id}.json"
+        JSON_PATH.parent.mkdir(parents=True, exist_ok=True)  # <-- ADD THIS LINE ✅
         existing_data = []
         if JSON_PATH.exists():
             with open(JSON_PATH, "r", encoding="utf-8-sig") as f:
@@ -110,27 +122,34 @@ def write_json_entry(entry):
         existing_data.append(entry)
         with open(JSON_PATH, "w", encoding="utf-8") as f:
             json.dump(existing_data, f, ensure_ascii=False, indent=4)
+        print(f"JSON file saved: {JSON_PATH}")
     except Exception as e:
         print(f"JSON write error: {e}")
+        print(f"Error writing JSON for post {message_id}: {e}")
 
+def write_text_file_per_post(message,sender_id):
+    """Save only the text of a message to a separate .txt file."""
 
-def safe_serialize_reactions(message):
-    r = getattr(message, "reactions", None)
-    if not r or not getattr(r, "results", None):
-        return ""
-    parts = []
-    for rc in r.results:
-        label = render_reaction_label(rc.reaction)
-        parts.append(f"{label}:{rc.count}")
-    return ";".join(parts)
+    try:
+        FILE_PATH = DATA_DIR / f"output/post_{message.id}_{sender_id}.txt"
+        FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        text_content = message.text or ""
+        if not text_content.strip():
+            return  # skip empty or non-text messages
+        with open(FILE_PATH, "w", encoding="utf-8-sig") as f:
+            f.write(text_content.strip())
 
+        print(f"Text file saved: {FILE_PATH}")
+    except Exception as e:
+        print(f"Error writing text file for post {message.id}: {e}")
 
 async def process_message_for_csv(message):
     sentiment = await asyncio.to_thread(sentiment_analyzer, message.text or "")
+    sender_id = getattr(message, "sender_id", None)
     row = {
         "chat_id": message.chat_id,
         "message_id": message.id,
-        "sender_id": getattr(message, "sender_id", None),
+        "sender_id": sender_id,
         "timestamp": message.date.isoformat() if getattr(message, "date", None) else None,
         "text": (message.text[:3000] if message.text else ""),
         "has_media": bool(message.media),
@@ -143,7 +162,8 @@ async def process_message_for_csv(message):
     }
     try:
         #write_csv_row(row)
-        write_json_entry(row)
+        write_json_entry_per_post(row, message.id, sender_id)
+        write_text_file_per_post(message,sender_id)
     except Exception as e:
         print(f"CSV write error: {e}")
 

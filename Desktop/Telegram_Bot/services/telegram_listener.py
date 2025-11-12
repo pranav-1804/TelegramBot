@@ -47,7 +47,7 @@ async def list_joined_channels(client):
     return channels
 
 
-async def process_last_messages_for_all(client, process_message, limit):
+async def process_messages_for_all_channels(client, process_message, limit):
     channels = await list_joined_channels(client)
     print(f"No INVITE_URL provided. Listening to all chats. Found {len(channels)} channels.")
 
@@ -63,14 +63,19 @@ async def process_last_messages_for_all(client, process_message, limit):
     # Register one global handler for new messages (all chats)
     @client.on(events.NewMessage())
     async def handle_all(event):
-        await process_message(event.message)  
+        await process_message(event.message)
+
+    @client.on(events.MessageEdited())
+    async def handle_edit(event):
+        message = event.message
+        await process_message(message)  
 
     return channels  # optional, if you need the list
 
 
-async def process_last_message_for_one_channel(client, process_message, target, limit):
+async def process_messages_for_one_channel(client, process_message, target, limit):
 
-        msgs = [msg async for msg in client.iter_messages(target, limit=10)]
+        msgs = [msg async for msg in client.iter_messages(target, limit=limit)]
         for m in reversed(msgs):
             await process_message(m)
 
@@ -143,7 +148,7 @@ def write_text_file_per_post(message,sender_id):
     except Exception as e:
         print(f"Error writing text file for post {message.id}: {e}")
 
-async def process_message_for_csv(message):
+async def process_message_for_json(message):
     sentiment = await asyncio.to_thread(sentiment_analyzer, message.text or "")
     sender_id = getattr(message, "sender_id", None)
     row = {
@@ -205,15 +210,8 @@ async def ensure_joined(client, invite_url: str):
         except Exception:
             pass
     return entity
-        
-async def main():
-    client = TelegramClient(SESSION, API_ID, API_HASH)
-    await client.start()
 
-    # Resolve and ensure we are re in the channel/group
-    target = await ensure_joined(client, INVITE_LINK)
-
-    async def process_message(message):
+async def process_message(message):
         
         # 1. Basic Info
         print("--- New Message ---")
@@ -242,15 +240,22 @@ async def main():
                 print(f"    - {label}: {reaction_count.count}")
 
         print("------\n")
-        await process_message_for_csv(message)
+        await process_message_for_json(message)
+        
+async def main():
+    client = TelegramClient(SESSION, API_ID, API_HASH)
+    await client.start()
+
+    # Resolve and ensure we are re in the channel/group
+    target = await ensure_joined(client, INVITE_LINK)
 
     if target:
         print("Listening to single channel ")
-        process_last_message_for_one_channel(client, process_message, target, limit= 5)
+        await process_messages_for_one_channel(client, process_message, target, limit= 5)
         
     else:
         print("No INVITE_URL provided. Listening to all chats.")
-        await process_last_messages_for_all(client, process_message, limit=5)
+        await process_messages_for_all_channels(client, process_message, limit=5)
 
     print("Listening for messages...")
     await client.run_until_disconnected()

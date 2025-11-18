@@ -11,7 +11,7 @@ variables:
   DOCKERHUB_REPO: "$DOCKER_USERNAME/teledatastream"  # set repo name
 
 .build_template:
-  tags: ["windows","docker","ws12"]  # match your runner tags
+  tags: ["ubuntu","vm"]  # match your runner tags
   before_script:
     - echo "Docker CLI info:"
     - docker version
@@ -58,7 +58,7 @@ test:
 diag:
   stage: diag
   image: docker:24.0.9
-  tags: ["windows","docker","ws12"]
+  tags: ["ubuntu","vm"]
   script:
     - echo "Check socket:"
     - ls -l /var/run || true
@@ -100,7 +100,7 @@ build:
 deploy:
   stage: deploy
   image: docker:24.0.9
-  tags: ["windows","docker","ws12"]
+  tags: ["ubuntu","vm"]
   script:
     - echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
     - echo "Logged into dockerhub succesfully!!"

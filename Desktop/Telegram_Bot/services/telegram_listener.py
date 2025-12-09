@@ -114,19 +114,12 @@ def safe_serialize_reactions(message):
 def write_json_entry_per_post(entry, message_id, sender_id):
     """Create a separate JSON file for each post."""
     try:
-        JSON_PATH = DATA_DIR / f"output/post_{message_id}_{sender_id}.json"
+        JSON_PATH = DATA_DIR / f"output/telegram/.meta/post_{message_id}_{sender_id}.txt.json"
         JSON_PATH.parent.mkdir(parents=True, exist_ok=True)  # <-- ADD THIS LINE ✅
-        existing_data = []
-        if JSON_PATH.exists():
-            with open(JSON_PATH, "r", encoding="utf-8-sig") as f:
-                try:
-                    existing_data = json.load(f)
-                except json.JSONDecodeError:
-                    existing_data = []
 
-        existing_data.append(entry)
         with open(JSON_PATH, "w", encoding="utf-8") as f:
-            json.dump(existing_data, f, ensure_ascii=False, indent=4)
+            json.dump(entry, f, ensure_ascii=False, indent=4)
+
         print(f"JSON file saved: {JSON_PATH}")
     except Exception as e:
         print(f"JSON write error: {e}")
@@ -136,7 +129,7 @@ def write_text_file_per_post(message,sender_id):
     """Save only the text of a message to a separate .txt file."""
 
     try:
-        FILE_PATH = DATA_DIR / f"output/post_{message.id}_{sender_id}.txt"
+        FILE_PATH = DATA_DIR / f"output/telegram/post_{message.id}_{sender_id}.txt"
         FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
         text_content = message.text or ""
         if not text_content.strip():
@@ -151,7 +144,13 @@ def write_text_file_per_post(message,sender_id):
 async def process_message_for_json(message):
     sentiment = await asyncio.to_thread(sentiment_analyzer, message.text or "")
     sender_id = getattr(message, "sender_id", None)
+    print("Generating json data")
     row = {
+    "title": "Telegram News",                
+    "backlink": str(DATA_DIR / f"output/telegram/post_{message.id}_{sender_id}.txt"),          
+    "language": "en",              
+    "classification": ["worldnews"],
+        "properties": {
         "chat_id": message.chat_id,
         "message_id": message.id,
         "sender_id": sender_id,
@@ -160,15 +159,23 @@ async def process_message_for_json(message):
         "has_media": bool(message.media),
         "media_type": type(message.media).__name__ if message.media else "",
         "file_name": getattr(message.file, "name", "") if getattr(message, "file", None) else "",
-        "file_size_kb": round(getattr(message.file, "size", 0) / 1024, 2) if getattr(message, "file", None) else "",
+        "file_size_kb": (round(getattr(message.file, "size", 0) / 1024, 2)
+                         if getattr(message, "file", None)
+                        else ""
+                        ),
         "views": getattr(message, "views", None),
         "reactions": safe_serialize_reactions(message),
-        "sentiment": sentiment[0]["label"] if sentiment else ""
+        "sentiment": sentiment[0]["label"] if sentiment else ""       
     }
+
+    }
+
+    print("Done generating")
     try:
         #write_csv_row(row)
-        write_json_entry_per_post(row, message.id, sender_id)
+        print("Saving files")
         write_text_file_per_post(message,sender_id)
+        write_json_entry_per_post(row, message.id, sender_id)
     except Exception as e:
         print(f"CSV write error: {e}")
 

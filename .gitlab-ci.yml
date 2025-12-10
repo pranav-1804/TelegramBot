@@ -58,7 +58,7 @@ test:
 diag:
   stage: diag
   image: docker:24.0.9
-  tags: ["ubuntu","vm"]
+  extends: .build_template
   script:
     - echo "Check socket:"
     - ls -l /var/run || true
@@ -100,7 +100,7 @@ build:
 deploy:
   stage: deploy
   image: docker:24.0.9
-  tags: ["ubuntu","vm"]
+  extends: .build_template
   script:
     - echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
     - echo "Logged into dockerhub succesfully!!"

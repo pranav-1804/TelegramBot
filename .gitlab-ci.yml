@@ -75,7 +75,7 @@ diag:
 
 build:
   stage: build
-  image: docker:25.0.0
+  image: docker:24.0.9
   extends: .build_template
   before_script:
     - echo "Building Docker image for commit:" ${CI_COMMIT_SHORT_SHA}

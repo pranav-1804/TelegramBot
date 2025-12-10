@@ -75,7 +75,7 @@ diag:
 
 build:
   stage: build
-  image: docker:24.0.9
+  image: docker:25.0.0
   extends: .build_template
   before_script:
     - echo "Building Docker image for commit:" ${CI_COMMIT_SHORT_SHA}
@@ -99,7 +99,7 @@ build:
     
 deploy:
   stage: deploy
-  image: docker:24.0.9
+  image: docker:25.0.0
   tags: ["ubuntu","vm"]
   script:
     - echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin

@@ -57,7 +57,7 @@ test:
 
 diag:
   stage: diag
-  image: docker:24.0.9
+  image: docker:25.0.0
   extends: .build_template
   script:
     - echo "Check socket:"

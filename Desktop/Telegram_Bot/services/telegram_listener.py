@@ -23,7 +23,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 INVITE_LINK = os.getenv("INVITE_LINK")
-LIMIT = os.getenv("LIMIT");
+MESSAGE_LIMIT = int(os.getenv("MESSAGE_LIMIT", "50"))
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 OUTPUT_DIR = DATA_DIR / "output/telegram"
@@ -222,7 +222,7 @@ async def process_all_channels(client, limit):
 
     for ch in channels:
         try:
-            print("Processing Historical Messages")
+            print(f"Processing Historical Messages for channel {ch.title}")
             history = [m async for m in client.iter_messages(ch, limit=limit)]
             for m in reversed(history):
                 await process_message_for_storage(m)
@@ -257,10 +257,10 @@ async def main():
 
     if target:
         print(f"Listening to channel: {target.title}")
-        await process_single_channel(client, target, LIMIT)
+        await process_single_channel(client, target, MESSAGE_LIMIT)
     else:
         print("Listening to all joined channels")
-        await process_all_channels(client, LIMIT)
+        await process_all_channels(client, MESSAGE_LIMIT)
 
     print("Listening for messages...")
     await client.run_until_disconnected()

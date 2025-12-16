@@ -1,268 +1,250 @@
-# python
 import asyncio
-import csv
 import os
 import json
-
 from pathlib import Path
-from dotenv import load_dotenv,find_dotenv
 from datetime import datetime
+from dotenv import load_dotenv, find_dotenv
 
 from telethon import TelegramClient, events
 from telethon.errors import UserAlreadyParticipantError
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.types import InputChannel, Channel, ReactionEmoji, ReactionCustomEmoji, ReactionPaid
+from telethon.tl.types import Channel, ReactionEmoji, ReactionCustomEmoji, ReactionPaid
 
 from transformers import pipeline
 
+# ======================================================
+# ENV SETUP
+# ======================================================
+
 load_dotenv(find_dotenv())
 
-# Please create a .env file. Add the environment variables over there. And never the env file on github or gitlab.
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 INVITE_LINK = os.getenv("INVITE_LINK")
 
-
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR = DATA_DIR / "output/telegram"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-JSON_PATH = DATA_DIR / f"messages_{timestamp}.json"
+META_DIR = OUTPUT_DIR / ".meta"
+META_DIR.mkdir(parents=True, exist_ok=True)
 
 sentiment_analyzer = pipeline("sentiment-analysis")
 
-# These are the headers for the Json file. 
-HEADER = ["chat_id", "message_id", "sender_id", "timestamp", "text",
-          "has_media", "media_type", "file_name", "file_size_kb",
-          "views", "reactions", "sentiment"]
+# ======================================================
+# RUNTIME STATE (PER CHANNEL)
+# ======================================================
 
-async def list_joined_channels(client):
-    channels = []
-    async for dialog in client.iter_dialogs():
-        ent = dialog.entity
-        if isinstance(ent, Channel):
-            channels.append(ent)
-    return channels
+CHANNEL_FILE_CONTEXT = {}  # chat_id -> {txt, json}
 
+# ======================================================
+# UTILITIES
+# ======================================================
 
-async def process_messages_for_all_channels(client, process_message, limit):
-    channels = await list_joined_channels(client)
-    print(f"No INVITE_URL provided. Listening to all chats. Found {len(channels)} channels.")
+def is_empty(val):
+    return val is None or not str(val).strip()
 
-    for ch in channels:
-        try:
-            # Pull last N messages for this channel
-            msgs = [m async for m in client.iter_messages(ch, limit=limit)]
-            for m in reversed(msgs):
-                await process_message(m)
-        except Exception as e:
-            print(f"Failed to fetch history for {getattr(ch, 'title', ch.id)}: {e}")
+def safe_channel_name(chat):
+    return (chat.username or chat.title or "telegram").replace(" ", "_")
 
-    # Register one global handler for new messages (all chats)
-    @client.on(events.NewMessage())
-    async def handle_all(event):
-        await process_message(event.message)
+def get_channel_file_paths(chat):
+    """
+    Create deterministic filenames ONCE per channel:
+    <name>_<id>_<timestamp>.txt
+    <name>_<id>_<timestamp>.txt.json
+    """
+    if chat.id in CHANNEL_FILE_CONTEXT:
+        return CHANNEL_FILE_CONTEXT[chat.id]
+    base_name = f"{safe_channel_name(chat)}_{chat.id}"
 
-    @client.on(events.MessageEdited())
-    async def handle_edit(event):
-        message = event.message
-        await process_message(message)  
+    txt_path = OUTPUT_DIR / f"{base_name}.txt"
+    json_path = META_DIR / f"{base_name}.txt.json"
 
-    return channels  # optional, if you need the list
+    CHANNEL_FILE_CONTEXT[chat.id] = {
+        "txt": txt_path,
+        "json": json_path
+    }
 
+    return CHANNEL_FILE_CONTEXT[chat.id]
 
-async def process_messages_for_one_channel(client, process_message, target, limit):
-
-        msgs = [msg async for msg in client.iter_messages(target, limit=limit)]
-        for m in reversed(msgs):
-            await process_message(m)
-
-        @client.on(events.NewMessage(chats=target))
-        async def handle_new(event):
-             message = event.message
-             await process_message(message)
-            
-        @client.on(events.MessageEdited(chats=target))
-        async def handle_edit(event):
-            message = event.message
-            await process_message(message)
-
-
-def write_csv_row(row_dict):
-    # Ensure file exists and has header; then append
-    CSV_PATH = Path(r"{CSV_FILE_PATH}")
-    file_exists = os.path.exists(CSV_PATH)
-    with open(CSV_PATH, mode="a", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=HEADER)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(row_dict)
-
+def render_reaction_label(r):
+    if isinstance(r, ReactionEmoji):
+        return r.emoticon
+    if isinstance(r, ReactionCustomEmoji):
+        return f"custom_emoji:{r.document_id}"
+    if isinstance(r, ReactionPaid):
+        return "paid_reaction"
+    return str(r)
 
 def safe_serialize_reactions(message):
     r = getattr(message, "reactions", None)
     if not r or not getattr(r, "results", None):
         return ""
-    parts = []
-    for rc in r.results:
-        label = render_reaction_label(rc.reaction)
-        parts.append(f"{label}:{rc.count}")
-    return ";".join(parts)
+    return ";".join(
+        f"{render_reaction_label(rc.reaction)}:{rc.count}"
+        for rc in r.results
+    )
 
-def write_json_entry_per_post(entry, message_id, sender_id):
-    """Create a separate JSON file for each post."""
-    try:
-        JSON_PATH = DATA_DIR / f"output/telegram/.meta/post_{message_id}_{sender_id}.txt.json"
-        JSON_PATH.parent.mkdir(parents=True, exist_ok=True)  # <-- ADD THIS LINE ✅
+# ======================================================
+# FILE WRITERS
+# ======================================================
 
-        with open(JSON_PATH, "w", encoding="utf-8") as f:
-            json.dump(entry, f, ensure_ascii=False, indent=4)
+def append_text_to_channel(message, chat):
+    if not message.text or not message.text.strip():
+        return
 
-        print(f"JSON file saved: {JSON_PATH}")
-    except Exception as e:
-        print(f"JSON write error: {e}")
-        print(f"Error writing JSON for post {message_id}: {e}")
+    paths = get_channel_file_paths(chat)
+    txt_path = paths["txt"]
 
-def write_text_file_per_post(message,sender_id):
-    """Save only the text of a message to a separate .txt file."""
+    with open(txt_path, "a", encoding="utf-8") as f:
+        f.write(
+            "\n----------------------------------------\n"
+            f"Message ID : {message.id}\n"
+            f"Timestamp  : {message.date.isoformat() if message.date else ''}\n"
+            f"Sender ID  : {message.sender_id}\n\n"
+            f"{message.text.strip()}\n"
+        )
 
-    try:
-        FILE_PATH = DATA_DIR / f"output/telegram/post_{message.id}_{sender_id}.txt"
-        FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        text_content = message.text or ""
-        if not text_content.strip():
-            return  # skip empty or non-text messages
-        with open(FILE_PATH, "w", encoding="utf-8-sig") as f:
-            f.write(text_content.strip())
+def append_json_to_channel(message_entry, chat):
+    paths = get_channel_file_paths(chat)
+    json_path = paths["json"]
 
-        print(f"Text file saved: {FILE_PATH}")
-    except Exception as e:
-        print(f"Error writing text file for post {message.id}: {e}")
+    if json_path.exists():
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = {
+            "title": f"Telegram {chat.title}",
+            "backlink": str(paths["txt"]),
+            "language": "en",
+            "classification": [chat.username or chat.title],
+            "properties": {
+                "chat_id": chat.id,
+                "messages": []
+            }
+        }
 
-async def process_message_for_json(message):
-    sentiment = await asyncio.to_thread(sentiment_analyzer, message.text or "")
-    sender_id = getattr(message, "sender_id", None)
-    print("Generating json data")
-    row = {
-    "title": "Telegram News",                
-    "backlink": str(DATA_DIR / f"output/telegram/post_{message.id}_{sender_id}.txt"),          
-    "language": "en",              
-    "classification": ["worldnews"],
-        "properties": {
-        "chat_id": message.chat_id,
+    data["properties"]["messages"].append(message_entry)
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# ======================================================
+# MESSAGE PROCESSING
+# ======================================================
+
+async def process_message_for_storage(message):
+    chat = await message.get_chat()
+
+    sentiment = await asyncio.to_thread(
+        sentiment_analyzer,
+        message.text or ""
+    )
+
+    message_entry = {
         "message_id": message.id,
-        "sender_id": sender_id,
-        "timestamp": message.date.isoformat() if getattr(message, "date", None) else None,
-        "text": (message.text[:3000] if message.text else ""),
+        "sender_id": message.sender_id,
+        "timestamp": message.date.isoformat() if message.date else None,
         "has_media": bool(message.media),
         "media_type": type(message.media).__name__ if message.media else "",
-        "file_name": getattr(message.file, "name", "") if getattr(message, "file", None) else "",
-        "file_size_kb": (round(getattr(message.file, "size", 0) / 1024, 2)
-                         if getattr(message, "file", None)
-                        else ""
-                        ),
+        "file_name": message.file.name if getattr(message, "file", None) else None,
+        "file_size_kb": (
+            round(message.file.size / 1024, 2)
+            if getattr(message, "file", None)
+            else None
+        ),
         "views": getattr(message, "views", None),
         "reactions": safe_serialize_reactions(message),
-        "sentiment": sentiment[0]["label"] if sentiment else ""       
+        "sentiment": sentiment[0]["label"] if sentiment else None
     }
 
-    }
+    append_text_to_channel(message, chat)
+    append_json_to_channel(message_entry, chat)
 
-    print("Done generating")
-    try:
-        #write_csv_row(row)
-        print("Saving files")
-        write_text_file_per_post(message,sender_id)
-        write_json_entry_per_post(row, message.id, sender_id)
-    except Exception as e:
-        print(f"CSV write error: {e}")
+# ======================================================
+# CHANNEL HANDLING
+# ======================================================
 
-def render_reaction_label(r):
-        if isinstance(r, ReactionEmoji):
-            return r.emoticon  # e.g., "👍"
-        if isinstance(r, ReactionCustomEmoji):
-            # We can later resolve document_id to a sticker/emoji file if needed
-            return f"custom_emoji:{r.document_id}"
-        if isinstance(r, ReactionPaid):
-            # Paid reactions don’t have an emoji string
-            return "paid_reaction"
-        # Fallback for future types
-        return str(r)
+async def list_joined_channels(client):
+    channels = []
+    async for dialog in client.iter_dialogs():
+        if isinstance(dialog.entity, Channel):
+            channels.append(dialog.entity)
+    return channels
 
-def _is_empty(s: str) -> bool:
-    return s is None or not str(s).strip()
-
-async def ensure_joined(client, invite_url: str):
-
-    if _is_empty(invite_url):
+async def ensure_joined(client, invite_url):
+    if is_empty(invite_url):
         return None
-     
-    # Handles both invite hash links and public @ links
+
     if "/+" in invite_url:
-        # Private invite hash style: https://t.me/+<hash>
         invite_hash = invite_url.rsplit("/", 1)[-1].replace("+", "")
         try:
             res = await client(ImportChatInviteRequest(invite_hash))
-            entity = res.chats[0] if res.chats else res.updates[0].chat
+            return res.chats[0]
         except UserAlreadyParticipantError:
-            entity = await client.get_entity(invite_url)
+            return await client.get_entity(invite_url)
     else:
-        # Public link or t.me/username
         entity = await client.get_entity(invite_url)
-        # If it's a channel and we’re not a participant, try joining
         try:
             await client(JoinChannelRequest(entity))
         except Exception:
             pass
-    return entity
+        return entity
 
-async def process_message(message):
-        
-        # 1. Basic Info
-        print("--- New Message ---")
-        print(f"Message ID: {message.id}")
-        print(f"Timestamp: {message.date.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # 2. Text Content
-        if message.text:
-            print(f"Text: {message.text[:100]}...") # Trimmed to first 100 chars
-            
-        # 3. Media/File Info
-        if message.media:
-            print("Media detected.")
-            if message.file:
-                print(f"  - File Name: {message.file.name}")
-                print(f"  - File Size: {round(message.file.size / 1024, 2)} KB")
+# ======================================================
+# MESSAGE STREAMS
+# ======================================================
 
-            # Example: Download media (uncomment if needed)
-            # await client.download_media(message.media, file="downloads/")
+async def process_single_channel(client, target, limit):
+    history = [m async for m in client.iter_messages(target, limit=limit)]
+    for m in reversed(history):
+        await process_message_for_storage(m)
 
-        # 4. Reaction Info
-        if message.reactions:
-            print("Reactions:")
-            for reaction_count in message.reactions.results:
-                label = render_reaction_label(reaction_count.reaction)
-                print(f"    - {label}: {reaction_count.count}")
+    @client.on(events.NewMessage(chats=target))
+    async def on_new(event):
+        await process_message_for_storage(event.message)
 
-        print("------\n")
-        await process_message_for_json(message)
-        
+    @client.on(events.MessageEdited(chats=target))
+    async def on_edit(event):
+        await process_message_for_storage(event.message)
+
+async def process_all_channels(client, limit):
+    channels = await list_joined_channels(client)
+
+    for ch in channels:
+        try:
+            history = [m async for m in client.iter_messages(ch, limit=limit)]
+            for m in reversed(history):
+                await process_message_for_storage(m)
+        except Exception as e:
+            print(f"History fetch failed for {ch.title}: {e}")
+
+    @client.on(events.NewMessage())
+    async def on_new(event):
+        await process_message_for_storage(event.message)
+
+    @client.on(events.MessageEdited())
+    async def on_edit(event):
+        await process_message_for_storage(event.message)
+
+# ======================================================
+# MAIN
+# ======================================================
+
 async def main():
     client = TelegramClient(SESSION, API_ID, API_HASH)
     await client.start()
 
-    # Resolve and ensure we are re in the channel/group
     target = await ensure_joined(client, INVITE_LINK)
 
     if target:
-        print("Listening to single channel ")
-        await process_messages_for_one_channel(client, process_message, target, limit= 5)
-        
+        print(f"Listening to channel: {target.title}")
+        await process_single_channel(client, target, limit=50)
     else:
-        print("No INVITE_URL provided. Listening to all chats.")
-        await process_messages_for_all_channels(client, process_message, limit=5)
+        print("Listening to all joined channels")
+        await process_all_channels(client, limit=50)
 
     print("Listening for messages...")
     await client.run_until_disconnected()

@@ -23,6 +23,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 INVITE_LINK = os.getenv("INVITE_LINK")
+LIMIT = os.getenv("LIMIT");
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 OUTPUT_DIR = DATA_DIR / "output/telegram"
@@ -198,10 +199,15 @@ async def ensure_joined(client, invite_url):
 # ======================================================
 
 async def process_single_channel(client, target, limit):
+
+    print("Processing Historical Messages")
     history = [m async for m in client.iter_messages(target, limit=limit)]
     for m in reversed(history):
         await process_message_for_storage(m)
 
+    print("Messages fetched and stored in file!!")
+
+    print("Listening for real time messages")
     @client.on(events.NewMessage(chats=target))
     async def on_new(event):
         await process_message_for_storage(event.message)
@@ -211,15 +217,21 @@ async def process_single_channel(client, target, limit):
         await process_message_for_storage(event.message)
 
 async def process_all_channels(client, limit):
+    print("Fetching all the channels the bot has joined to ")
     channels = await list_joined_channels(client)
 
     for ch in channels:
         try:
+            print("Processing Historical Messages")
             history = [m async for m in client.iter_messages(ch, limit=limit)]
             for m in reversed(history):
                 await process_message_for_storage(m)
         except Exception as e:
             print(f"History fetch failed for {ch.title}: {e}")
+    
+    print("Messages fetched and stored in file!!")
+
+    print("Listening for real time messages")
 
     @client.on(events.NewMessage())
     async def on_new(event):
@@ -237,14 +249,18 @@ async def main():
     client = TelegramClient(SESSION, API_ID, API_HASH)
     await client.start()
 
+    print("Initialized Telegram Client")
+    print("------------------------------------------")
+
+    print("Trying to join the specified channel if mentioned any!!")
     target = await ensure_joined(client, INVITE_LINK)
 
     if target:
         print(f"Listening to channel: {target.title}")
-        await process_single_channel(client, target, limit=50)
+        await process_single_channel(client, target, LIMIT)
     else:
         print("Listening to all joined channels")
-        await process_all_channels(client, limit=50)
+        await process_all_channels(client, LIMIT)
 
     print("Listening for messages...")
     await client.run_until_disconnected()

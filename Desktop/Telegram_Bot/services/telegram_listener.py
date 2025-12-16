@@ -26,7 +26,7 @@ INVITE_LINK = os.getenv("INVITE_LINK")
 MESSAGE_LIMIT = int(os.getenv("MESSAGE_LIMIT", "50"))
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
-OUTPUT_DIR = DATA_DIR / "output/telegram"
+OUTPUT_DIR = DATA_DIR / "ingestion/telegram"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 META_DIR = OUTPUT_DIR / ".meta"
